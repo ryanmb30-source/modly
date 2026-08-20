@@ -36,9 +36,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# The only legitimate caller is the Electron renderer. In production it is loaded
+# with loadFile(), so its origin is file:// and the browser sends "null"; in dev it
+# is ELECTRON_RENDERER_URL on a localhost port.
+#
+# This replaces allow_origins=["*"], which let any web page the user happened to
+# visit call every unauthenticated endpoint on this API and read the responses.
+#
+# CAVEAT: "null" is not a strong identity -- a sandboxed iframe on a hostile page
+# also sends Origin: null. Origin checks alone cannot fully authenticate the
+# renderer; a shared token minted by Electron at spawn time is the real fix.
+# Tracked separately.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["null"],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
     # drei's SplatLoader reads Content-Length to size its buffers; cross-origin
