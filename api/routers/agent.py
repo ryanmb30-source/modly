@@ -468,50 +468,54 @@ async def agent_chat(request: AgentChatRequest):
         ollama_extra["think"] = False
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        for _ in range(10):  # max tool-call rounds
-            r = await client.post(
-                f"{request.ollama_url}/api/chat",
-                json={"model": request.model, "messages": messages, "tools": TOOLS, "stream": False, **ollama_extra},
-            )
-
-            if r.status_code != 200:
-                return AgentChatResponse(
-                    message=f"Ollama error ({r.status_code}). Is Ollama running at {request.ollama_url}?",
+        try:
+            for _ in range(10):  # max tool-call rounds
+                r = await client.post(
+                    f"{request.ollama_url}/api/chat",
+                    json={"model": request.model, "messages": messages, "tools": TOOLS, "stream": False, **ollama_extra},
                 )
 
-            msg = r.json()["message"]
-            messages.append(msg)
+                if r.status_code != 200:
+                    return AgentChatResponse(
+                        message=f"Ollama error ({r.status_code}). Is Ollama running at {request.ollama_url}?",
+                    )
 
-            clean_content, thinking_text = _extract_thinking(msg)
-            if thinking_text:
-                all_thinking.append(thinking_text)
+                msg = r.json()["message"]
+                messages.append(msg)
 
-            tool_calls = msg.get("tool_calls") or []
-            if not tool_calls:
-                combined_thinking = "\n\n---\n\n".join(all_thinking) if all_thinking else None
-                return AgentChatResponse(
-                    message=clean_content,
-                    actions=actions_done,
-                    thinking=combined_thinking,
-                )
+                clean_content, thinking_text = _extract_thinking(msg)
+                if thinking_text:
+                    all_thinking.append(thinking_text)
 
-            for tc in tool_calls:
-                fn = tc["function"]
-                result_text, payload = await execute_tool(fn["name"], fn.get("arguments") or {}, request.context)
-                actions_done.append(ActionDone(tool=fn["name"], result=result_text, payload=payload))
-                messages.append({"role": "tool", "content": result_text})
+                tool_calls = msg.get("tool_calls") or []
+                if not tool_calls:
+                    combined_thinking = "\n\n---\n\n".join(all_thinking) if all_thinking else None
+                    return AgentChatResponse(
+                        message=clean_content,
+                        actions=actions_done,
+                        thinking=combined_thinking,
+                    )
 
-        has_workflow = any(a.tool == "run_workflow" for a in actions_done)
-        if has_workflow:
-            # Unload LLM from VRAM immediately so the workflow has full GPU memory
-            try:
-                await client.post(
-                    f"{request.ollama_url}/api/generate",
-                    json={"model": request.model, "keep_alive": 0},
-                    timeout=5.0,
-                )
-            except Exception:
-                pass
+                for tc in tool_calls:
+                    fn = tc["function"]
+                    result_text, payload = await execute_tool(fn["name"], fn.get("arguments") or {}, request.context)
+                    actions_done.append(ActionDone(tool=fn["name"], result=result_text, payload=payload))
+                    messages.append({"role": "tool", "content": result_text})
+
+        finally:
+            # The run_workflow tool only returns a payload; the UI starts the
+            # workflow once this response lands. Release the chat model here so
+            # the GPU is free by then -- on every exit path, not just the
+            # exhausted-loop one.
+            if any(a.tool == "run_workflow" for a in actions_done):
+                try:
+                    await client.post(
+                        f"{request.ollama_url}/api/generate",
+                        json={"model": request.model, "keep_alive": 0},
+                        timeout=5.0,
+                    )
+                except Exception:
+                    pass
 
     combined_thinking = "\n\n---\n\n".join(all_thinking) if all_thinking else None
     return AgentChatResponse(message="Reached maximum tool iterations.", actions=actions_done, thinking=combined_thinking)
