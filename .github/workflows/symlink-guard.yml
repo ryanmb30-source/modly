@@ -27,11 +27,16 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      # npm install, not npm ci: the committed package-lock.json is out of sync
-      # with package.json upstream, so `npm ci` fails on a missing-from-lock
-      # error. The repo's own ci.yml uses npm install for the same reason.
+      # npm ci, not npm install: installs exactly what the lockfile pins, and
+      # fails loudly if package.json and the lockfile ever drift apart again
+      # instead of silently reconciling them the way npm install does.
+      #
+      # This was npm install because upstream's lockfile was out of sync.
+      # Regenerating it turned out to be cheap: upstream has touched that file
+      # once in its last 129 commits, so the merge-conflict cost that argument
+      # rested on is not real.
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       # --test-reporter=tap is pinned deliberately: node 20 defaults to TAP and
       # node 24 to spec, and the two disagree on how pattern-filtered tests are
