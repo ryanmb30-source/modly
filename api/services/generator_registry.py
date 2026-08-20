@@ -654,7 +654,7 @@ class GeneratorRegistry:
         registration_authorization = _consume_registration_validation_capability(
             validation_capability,
         )
-        print("[Registry] Reloading extensions…")
+        print("[Registry] Reloading extensions...")
         for gen in self._generators.values():
             if isinstance(gen, ExtensionProcess):
                 gen.stop()

@@ -90,6 +90,19 @@ class VenvPythonTests(unittest.TestCase):
             self.assertEqual(result, Path("/tmp/ext") / "venv" / "bin" / "python")
 
 
+class BuildEnvTests(unittest.TestCase):
+    def test_forces_utf8_stdio_on_worker(self) -> None:
+        proc = _make_proc()
+        env = proc._build_env()
+        self.assertEqual(env.get("PYTHONUTF8"), "1")
+
+    def test_sets_worker_model_dir_when_known(self) -> None:
+        proc = _make_proc()
+        proc.model_dir = Path("/tmp/models/ext/node")
+        env = proc._build_env()
+        self.assertEqual(env.get("MODEL_DIR"), str(Path("/tmp/models/ext/node")))
+
+
 class MissingModuleExtractionTests(unittest.TestCase):
     def test_extracts_module_name_from_message(self) -> None:
         proc = _make_proc()
