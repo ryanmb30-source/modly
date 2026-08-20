@@ -21,6 +21,16 @@ import { getProcessRunner, getPythonProcessRunner, getExtPythonExe, terminatePro
 import { getBuiltinExtensionsDir } from './builtin-sync'
 import { spawn, execFile } from 'child_process'
 import {
+  describeExecutionPaths,
+  detectExecutionPaths,
+  isTrusted,
+  npmInstallArgs,
+  parseTarballCommitSha,
+  recordTrust,
+  revokeTrust,
+} from './extension-trust'
+import { loadTrustStore, saveTrustStore } from './extension-trust-store'
+import {
   EXT_INCOMPLETE_MARKER,
   EXT_REGISTRATION_PENDING_MARKER,
   EXT_VALIDATED_MARKER,
@@ -1136,8 +1146,23 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
       await writeFile(tarPath, Buffer.from(response.data as ArrayBuffer))
 
       // 3. Extract tarball (GitHub wraps contents in a top-level {owner}-{repo}-{sha}/ folder)
+      //    That wrapper name is the only place the resolved commit appears --
+      //    /tarball/HEAD is a moving ref -- and `strip: 1` discards it, so read
+      //    it first. Install consent is pinned to this sha (issue #7).
       emit({ step: 'extracting' })
       await mkdir(extractDir, { recursive: true })
+
+      const shaHolder: { value: string | null } = { value: null }
+      await tar.t({
+        file: tarPath,
+        onentry: (entry) => {
+          if (shaHolder.value) return
+          const top = String(entry.path).split(/[/\\]/).filter(Boolean)[0] ?? ''
+          shaHolder.value = parseTarballCommitSha(top)
+        },
+      })
+      const commitSha = shaHolder.value
+
       await tar.x({ file: tarPath, cwd: extractDir, strip: 1 })
 
       // 4. Validate manifest.json
@@ -1166,6 +1191,71 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
       // Override source field with the actual GitHub URL so trust is based on origin
       manifest.source = `https://github.com/${owner}/${repo}`
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8')
+
+      // 4b. Install consent (issue #7).
+      //
+      // Everything past this point can execute the extension's own code: npm
+      // lifecycle scripts, pip building an sdist, setup.py, and later the
+      // import of generator.py. Ask once, here, naming the paths that actually
+      // exist in what was just downloaded.
+      //
+      // The manifest is deliberately not consulted. It is written by the same
+      // party this gate exists to contain, so a "please run my scripts" field
+      // would be attacker-controlled input to a trust decision.
+      const executionPaths = detectExecutionPaths({
+        hasPackageJson:  existsSync(join(extractDir, 'package.json')),
+        hasSetupPy:      existsSync(join(extractDir, 'setup.py')),
+        hasRequirements: existsSync(join(extractDir, 'requirements.txt')),
+      })
+
+      const userDataDir = app.getPath('userData')
+      let trustStore = loadTrustStore(userDataDir)
+      let scriptsAllowed = commitSha !== null && isTrusted(trustStore, extensionId, commitSha)
+
+      if (executionPaths.length > 0 && !scriptsAllowed) {
+        const versionLine = commitSha
+          ? `Version: ${commitSha}`
+          : 'Version: unknown (the commit could not be determined)'
+
+        const prompt = {
+          type:      'warning' as const,
+          buttons:   ['Cancel', 'Install and run its code'],
+          defaultId: 0,
+          cancelId:  0,
+          title:     'Install extension?',
+          message:   `Install "${extensionId}" from github.com/${owner}/${repo}?`,
+          detail: [
+            'Installing this extension runs code it supplies, with your account\'s',
+            'permissions. Only continue if you trust this repository.',
+            '',
+            ...describeExecutionPaths(executionPaths).map((line) => `• ${line}`),
+            '',
+            versionLine,
+          ].join('\n'),
+        }
+
+        // Parent it to the window when there is one so it is modal; fall back to
+        // a parentless dialog rather than asserting a window exists.
+        const { response: choice } = win
+          ? await dialog.showMessageBox(win, prompt)
+          : await dialog.showMessageBox(prompt)
+
+        if (choice !== 1) {
+          throw new Error('Installation cancelled: the extension was not approved to run its code.')
+        }
+
+        scriptsAllowed = true
+
+        // Record against the exact commit, so the next version asks again. An
+        // unknown sha is never recorded -- it would have to be stored under a
+        // key that can never match, and silently re-prompting is the safe end.
+        if (commitSha) {
+          trustStore = recordTrust(trustStore, extensionId, commitSha, new Date().toISOString())
+          saveTrustStore(userDataDir, trustStore)
+        } else {
+          logger.warn(`[ext-trust] approved "${extensionId}" but no commit sha was resolved; not recording`)
+        }
+      }
 
       // 5. Stage into a fresh, unique dir next to the final location (so a new
       //    attempt can never merge into leftovers of a previous one), mark it
@@ -1296,7 +1386,10 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
             emit({ step: 'setting_up', message: 'Installing dependencies…' })
             await new Promise<void>((resolve, reject) => {
               const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-              const child = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+              // Blocked unless the user approved this exact commit above. On
+              // approval the flag is omitted rather than set to false, so the
+              // user's own npmrc still decides (see npmInstallArgs).
+              const child = spawn(npm, npmInstallArgs(scriptsAllowed), {
                 cwd:   destDir,
                 stdio: 'pipe',
               })
@@ -1481,6 +1574,15 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
             : `Could not uninstall the extension during ${removed.stage}: ${String(removed.error)}`,
         }
       }
+      // Drop install consent, so reinstalling asks again rather than silently
+      // inheriting a grant the user may have long forgotten (issue #7).
+      try {
+        const userDataDir = app.getPath('userData')
+        saveTrustStore(userDataDir, revokeTrust(loadTrustStore(userDataDir), String(extensionId)))
+      } catch (err) {
+        logger.warn(`[ext-trust] could not revoke consent for "${extensionId}": ${String(err)}`)
+      }
+
       // Hot-reload Python so it stops using the deleted model extension
       try {
         await axios.post(`${API_BASE_URL}/extensions/reload`, {}, { timeout: 10_000 })
