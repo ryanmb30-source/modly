@@ -33,26 +33,45 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # --test-reporter=tap is pinned deliberately: node 20 defaults to TAP and
+      # node 24 to spec, and the two disagree on how pattern-filtered tests are
+      # counted, so aggregate pass/skip totals are not portable.
       - name: Run the symlinked-backup guard test
         run: |
           set -o pipefail
           node --test \
+            --test-reporter=tap \
             --test-name-pattern="never writes through a symlinked backup" \
             electron/main/extension-install-recovery.test.mjs 2>&1 | tee result.txt
 
       # The test skips itself when symlinks are unavailable, and node exits 0 on
       # a skip. Without this step a runner that could not create symlinks would
-      # report green while proving nothing.
+      # report green while proving nothing. Assert on the test's own TAP line
+      # rather than aggregate counts, which vary by node version.
       - name: Assert the test actually ran
         run: |
-          if ! grep -qE '(^|[^0-9])pass 1([^0-9]|$)' result.txt; then
-            echo "::error::Expected exactly 1 passing test; the guard did not run."
+          NAME='registration transaction state never writes through a symlinked backup'
+          LINE=$(grep -E "^(ok|not ok) [0-9]+ - $NAME" result.txt || true)
+          echo "TAP line: ${LINE:-<none>}"
+
+          if [ -z "$LINE" ]; then
+            echo "::error::Guard test not found in output - did the name change?"
             cat result.txt
             exit 1
           fi
-          if ! grep -qE '(^|[^0-9])skipped 0([^0-9]|$)' result.txt; then
-            echo "::error::The test was SKIPPED on the runner - the symlink probe found symlink creation unavailable, so this job proves nothing."
+
+          case "$LINE" in
+            'not ok'*)
+              echo "::error::Guard test FAILED - a symlinked backup was written or deleted through."
+              cat result.txt
+              exit 1
+              ;;
+          esac
+
+          if printf '%s' "$LINE" | grep -q '# SKIP'; then
+            echo "::error::Guard test was SKIPPED on the runner, so this job proves nothing."
             cat result.txt
             exit 1
           fi
+
           echo "Symlinked-backup guard ran and passed."
