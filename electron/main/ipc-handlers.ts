@@ -1296,7 +1296,7 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
             emit({ step: 'setting_up', message: 'Installing dependencies…' })
             await new Promise<void>((resolve, reject) => {
               const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-              const child = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund', '--ignore-scripts=false'], {
+              const child = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
                 cwd:   destDir,
                 stdio: 'pipe',
               })

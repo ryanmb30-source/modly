@@ -43,7 +43,7 @@ for (const id of readdirSync(srcDir)) {
   if (existsSync(pkgSrc)) {
     cpSync(pkgSrc, join(extOutDir, 'package.json'))
     console.log(`[build-builtins] ${id}: Installing npm dependencies…`)
-    execSync('npm install --omit=dev --no-audit --no-fund --ignore-scripts=false', {
+    execSync('npm install --omit=dev --no-audit --no-fund', {
       cwd:   extOutDir,
       stdio: 'inherit',
     })
