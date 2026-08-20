@@ -21,7 +21,9 @@ from pathlib import Path
 from urllib.parse import quote
 from pydantic import BaseModel
 
+import services.generator_registry as reg_module
 from services.generator_registry import WORKSPACE_DIR
+from services.safe_paths import resolve_within
 
 router = APIRouter(tags=["optimize"])
 
@@ -54,9 +56,7 @@ def _resolve_input_path(raw_path: str) -> Path:
             raise HTTPException(404, f"File not found: {raw_path}")
         return resolved
 
-    resolved = (WORKSPACE_DIR / raw_path).resolve()
-    if not str(resolved).startswith(str(WORKSPACE_DIR.resolve())):
-        raise HTTPException(400, "Invalid path")
+    resolved = resolve_within(reg_module.WORKSPACE_DIR, raw_path)
     if not resolved.exists():
         raise HTTPException(404, f"File not found: {raw_path}")
     return resolved
@@ -407,7 +407,7 @@ async def import_mesh_by_path(body: ImportByPathRequest):
     # Gaussian Splat: serve a .splat as-is, convert a GS .ply to .splat.
     # The viewer detects splats by the .splat/.ply extension in the served URL.
     if ext == "splat":
-        return {"url": f"/optimize/serve-file?path={quote(str(file_path))}"}
+        return {"url": f"/optimize/serve-file?path={quote(_register_servable(file_path))}"}
 
     if ext == "ply" and _is_gaussian_ply(file_path):
         tmp_dir = tempfile.mkdtemp(prefix="modly_import_")
@@ -416,18 +416,35 @@ async def import_mesh_by_path(body: ImportByPathRequest):
             _convert_gaussian_ply_to_splat(file_path, output_path)
         except Exception as err:  # noqa: BLE001 — surface a clean error, never 500-crash
             raise HTTPException(400, f"Unrecognised Gaussian .ply: {err}")
-        return {"url": f"/optimize/serve-file?path={quote(output_path)}"}
+        return {"url": f"/optimize/serve-file?path={quote(_register_servable(output_path))}"}
 
     if ext == "glb":
         # Serve the original file directly — no copy
-        return {"url": f"/optimize/serve-file?path={quote(str(file_path))}"}
+        return {"url": f"/optimize/serve-file?path={quote(_register_servable(file_path))}"}
 
     # Mesh ply / obj / stl: convert to GLB in a temp directory (not the workspace)
     tmp_dir = tempfile.mkdtemp(prefix="modly_import_")
     output_path = os.path.join(tmp_dir, "mesh.glb")
     loaded = trimesh.load(str(file_path))
     loaded.export(output_path)
-    return {"url": f"/optimize/serve-file?path={quote(output_path)}"}
+    return {"url": f"/optimize/serve-file?path={quote(_register_servable(output_path))}"}
+
+
+# Paths this process has deliberately made servable: temp files it converted, and
+# originals the user picked through a native dialog. serve_file used to accept any
+# absolute path, which let a caller read any .glb/.splat on disk. Membership is the
+# authorisation check now.
+#
+# In-memory by design: the set dies with the process, so URLs minted before a
+# restart stop resolving and the client re-imports. That is preferable to
+# persisting a grant list.
+_SERVABLE_PATHS: set[str] = set()
+
+
+def _register_servable(path) -> str:
+    """Mark a path servable by serve_file and return it unchanged."""
+    _SERVABLE_PATHS.add(str(Path(path).resolve()))
+    return str(path)
 
 
 _SERVE_MEDIA_TYPES = {
@@ -439,6 +456,8 @@ _SERVE_MEDIA_TYPES = {
 @router.get("/serve-file")
 def serve_file(path: str):
     file_path = Path(path)
+    if str(file_path.resolve()) not in _SERVABLE_PATHS:
+        raise HTTPException(403, "Path not servable")
     if not file_path.is_file():
         raise HTTPException(404, "File not found")
     media_type = _SERVE_MEDIA_TYPES.get(file_path.suffix.lower())
@@ -455,10 +474,7 @@ def ply_to_splat(path: str):
     as-is; a GS .ply is normalised + converted (cached by mtime + conv version).
     """
     import services.generator_registry as reg  # dynamic: workspace dir may change at runtime
-    workspace = reg.WORKSPACE_DIR.resolve()
-    src = (workspace / path).resolve()
-    if not str(src).startswith(str(workspace)):
-        raise HTTPException(400, "Invalid path")
+    src = resolve_within(reg.WORKSPACE_DIR, path)
     if not src.is_file():
         raise HTTPException(404, "File not found")
 
@@ -482,9 +498,7 @@ def export_mesh(path: str, format: str):
     if format not in ("obj", "stl", "ply"):
         raise HTTPException(400, "Supported formats: obj, stl, ply")
 
-    input_path = (WORKSPACE_DIR / path).resolve()
-    if not str(input_path).startswith(str(WORKSPACE_DIR.resolve())):
-        raise HTTPException(400, "Invalid path")
+    input_path = resolve_within(reg_module.WORKSPACE_DIR, path)
     if not input_path.exists():
         raise HTTPException(404, f"File not found: {path}")
 

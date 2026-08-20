@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi import HTTPException
 
 from routers import generation, model, optimize, status, settings, extensions, export, workflow_runs, agent
+from services.safe_paths import resolve_within
 
 
 @asynccontextmanager
@@ -59,7 +60,7 @@ app.include_router(agent.router)
 @app.get("/workspace/{full_path:path}")
 async def serve_workspace_file(full_path: str):
     import services.generator_registry as reg
-    file_path = reg.WORKSPACE_DIR / full_path
-    if not file_path.exists() or not file_path.is_file():
+    file_path = resolve_within(reg.WORKSPACE_DIR, full_path)
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(file_path))
