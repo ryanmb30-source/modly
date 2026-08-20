@@ -638,7 +638,26 @@ test('destination validated marker cannot authorize deletion of an uncommitted b
   }
 })
 
-test('registration transaction state never writes through a symlinked backup', async () => {
+// Windows refuses symlink creation unless Developer Mode is enabled or the
+// process is elevated, so this assertion is unrunnable on a stock box. Probe the
+// capability once and skip rather than fail, which would make the pre-push gate
+// permanently red and train everyone to bypass it.
+const symlinkSupported = (() => {
+  const probeDir = mkdtempSync(join(tmpdir(), 'modly-symlink-probe-'))
+  try {
+    mkdirSync(join(probeDir, 'target'))
+    symlinkSync(join(probeDir, 'target'), join(probeDir, 'link'), 'dir')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true })
+  }
+})()
+
+test('registration transaction state never writes through a symlinked backup', {
+  skip: symlinkSupported ? false : 'symlink creation not permitted on this host',
+}, async () => {
   const root = mkdtempSync(join(tmpdir(), 'modly-symlink-state-test-'))
   const source = mkdtempSync(join(tmpdir(), 'modly-linked-source-'))
   const destination = join(root, 'pixal3d')
