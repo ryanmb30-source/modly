@@ -50,18 +50,48 @@ def _require_pymeshlab():
         raise HTTPException(503, "pymeshlab is unavailable on this system (DLL blocked by Windows Application Control policy)")
 
 
-def _resolve_input_path(raw_path: str) -> Path:
+def _resolve_mesh_source(raw_path: str) -> Path:
+    """Resolve a caller-supplied mesh path, for either route a mesh arrives by.
+
+    Workspace-relative paths are confined to the workspace. Absolute paths are
+    authorised by membership of _SERVABLE_PATHS -- files this process was asked
+    to open through a native dialog -- and refused otherwise.
+
+    The allowlist is the point. `path` on these endpoints is not always chosen
+    by the user: the agent's decimate_mesh and smooth_mesh tools pass whatever
+    the model puts in the tool call, so an arbitrary absolute path here means a
+    model can name any mesh on disk and have it copied into the workspace and
+    served back. That is the arbitrary-read shape closed for serve_file in #3.
+    """
     candidate = Path(raw_path)
     if candidate.is_absolute():
         resolved = candidate.resolve()
-        if not resolved.exists():
-            raise HTTPException(404, f"File not found: {raw_path}")
-        return resolved
+        if str(resolved) not in _SERVABLE_PATHS:
+            raise HTTPException(403, "Path not available to this endpoint")
+    else:
+        resolved = resolve_within(reg_module.WORKSPACE_DIR, raw_path)
 
-    resolved = resolve_within(reg_module.WORKSPACE_DIR, raw_path)
     if not resolved.exists():
         raise HTTPException(404, f"File not found: {raw_path}")
     return resolved
+
+
+def _mesh_output_dir(input_path: Path) -> tuple[Path, Path]:
+    """Where a derived mesh is written, plus the root its URL is relative to.
+
+    Derived meshes sit beside their source when the source is in the workspace,
+    and in Workflows/ otherwise.
+
+    Containment is `is_relative_to`, not a string prefix. `startswith` treats
+    `<workspace>-evil` as living inside `<workspace>`, so a sibling directory
+    sharing the name prefix was accepted as "inside" and the output written
+    there -- outside the workspace -- before relative_to() raised and turned it
+    into a 500. Issue #4 named this exact bypass and fixed it in export.py and
+    main.py; these three call sites were missed.
+    """
+    workspace = reg_module.WORKSPACE_DIR.resolve()
+    inside = input_path.is_relative_to(workspace)
+    return (input_path.parent if inside else workspace / "Workflows"), workspace
 
 
 @router.post("/mesh")
@@ -69,7 +99,7 @@ def optimize_mesh(body: OptimizeRequest):
     _require_pymeshlab()
     target_faces = max(100, min(500_000, body.target_faces))
 
-    input_path = _resolve_input_path(body.path)
+    input_path = _resolve_mesh_source(body.path)
 
     tmp_dir = tempfile.mkdtemp()
     try:
@@ -79,8 +109,7 @@ def optimize_mesh(body: OptimizeRequest):
 
     stem = input_path.stem
     output_name = f"{stem}_opt{target_faces}.glb"
-    workspace = reg_module.WORKSPACE_DIR
-    output_dir = input_path.parent if str(input_path).startswith(str(workspace.resolve())) else workspace / "Workflows"
+    output_dir, workspace = _mesh_output_dir(input_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / output_name
     result.export(str(output_path))
@@ -184,7 +213,7 @@ def smooth_mesh(body: SmoothRequest):
     _require_pymeshlab()
     iterations = max(1, min(20, body.iterations))
 
-    input_path = _resolve_input_path(body.path)
+    input_path = _resolve_mesh_source(body.path)
 
     tmp_dir = tempfile.mkdtemp()
     try:
@@ -194,8 +223,7 @@ def smooth_mesh(body: SmoothRequest):
 
     stem = input_path.stem
     output_name = f"{stem}_smooth{iterations}.glb"
-    workspace = reg_module.WORKSPACE_DIR
-    output_dir = input_path.parent if str(input_path).startswith(str(workspace.resolve())) else workspace / "Workflows"
+    output_dir, workspace = _mesh_output_dir(input_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / output_name
     result.export(str(output_path))
@@ -208,7 +236,7 @@ def smooth_mesh(body: SmoothRequest):
 def transform_mesh(body: TransformRequest):
     # Bake an interactive-gizmo transform into the GLB at scene level so it
     # persists to export. Pure trimesh — no pymeshlab needed.
-    input_path = _resolve_input_path(body.path)
+    input_path = _resolve_mesh_source(body.path)
 
     matrix = np.asarray(body.matrix, dtype=float)
     if matrix.shape != (4, 4):
@@ -223,8 +251,7 @@ def transform_mesh(body: TransformRequest):
 
     stem = input_path.stem
     output_name = f"{stem}_xf_{uuid.uuid4().hex[:8]}.glb"
-    workspace = reg_module.WORKSPACE_DIR
-    output_dir = input_path.parent if str(input_path).startswith(str(workspace.resolve())) else workspace / "Workflows"
+    output_dir, workspace = _mesh_output_dir(input_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / output_name
     loaded.export(str(output_path))
@@ -497,36 +524,15 @@ def ply_to_splat(path: str):
     return FileResponse(str(out), media_type="application/octet-stream")
 
 
-def _resolve_exportable_path(raw_path: str) -> Path:
-    """Resolve an export source for either route a mesh reaches the viewer by.
-
-    A generated mesh is workspace-relative and stays confined to the workspace.
-    An imported mesh lives wherever the user picked it, so it arrives as an
-    absolute path and is authorised by membership of _SERVABLE_PATHS -- the same
-    allowlist serve_file uses, populated only by files this process was asked to
-    open. "The user chose this file" stays the authorisation check; an arbitrary
-    absolute path that merely exists is still refused.
-
-    Without the absolute branch, exporting an imported mesh to obj/stl/ply
-    failed with 400 Invalid path (issue #10).
-    """
-    candidate = Path(raw_path)
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-        if str(resolved) not in _SERVABLE_PATHS:
-            raise HTTPException(403, "Path not exportable")
-        return resolved
-    return resolve_within(reg_module.WORKSPACE_DIR, raw_path)
-
-
 @router.get("/export")
 def export_mesh(path: str, format: str):
     if format not in ("obj", "stl", "ply"):
         raise HTTPException(400, "Supported formats: obj, stl, ply")
 
-    input_path = _resolve_exportable_path(path)
-    if not input_path.exists():
-        raise HTTPException(404, f"File not found: {path}")
+    # Same resolver the optimize endpoints use: one containment rule, not one
+    # per endpoint. Issue #4 asked for exactly that after three endpoints
+    # disagreed about how to confine a caller-supplied path.
+    input_path = _resolve_mesh_source(path)
 
     loaded = trimesh.load(str(input_path))
     if isinstance(loaded, trimesh.Scene):
