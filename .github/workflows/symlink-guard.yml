@@ -27,8 +27,11 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # npm install, not npm ci: the committed package-lock.json is out of sync
+      # with package.json upstream, so `npm ci` fails on a missing-from-lock
+      # error. The repo's own ci.yml uses npm install for the same reason.
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run the symlinked-backup guard test
         run: |
