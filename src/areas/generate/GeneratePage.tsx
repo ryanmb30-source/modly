@@ -4,6 +4,7 @@ import { useAppStore, DEFAULT_LIGHT_SETTINGS } from '@shared/stores/appStore'
 import type { GenerationJob, LightSettings } from '@shared/stores/appStore'
 import { useApi } from '@shared/hooks/useApi'
 import { withApiToken } from '@shared/api/authenticatedRequest'
+import { buildMeshExportUrl, toApiMeshPath } from './meshPath'
 import { ColorPicker } from '@shared/components/ui'
 import GenerationHUD from './components/GenerationHUD'
 import Viewer3D from './components/Viewer3D'
@@ -657,21 +658,17 @@ export default function GeneratePage(): JSX.Element {
     if (format === 'glb') {
       link.href = withApiToken(`${apiUrl}${currentJob.outputUrl}`, apiToken)
     } else {
-      const path = encodeURIComponent(currentJob.outputUrl.replace('/workspace/', ''))
-      link.href = withApiToken(`${apiUrl}/optimize/export?path=${path}&format=${format}`, apiToken)
+      // buildMeshExportUrl resolves an imported mesh's serve-file URL back to
+      // its path on disk. Stripping '/workspace/' here instead was a no-op on
+      // that shape, so the whole URL went out as `path` and the backend
+      // answered 400 (#10).
+      link.href = withApiToken(
+        buildMeshExportUrl(apiUrl, currentJob.outputUrl, format),
+        apiToken,
+      )
     }
     link.download = `${stem}.${format}`
     link.click()
-  }
-
-  function getOptimizePath(url: string): string {
-    if (url.startsWith('/workspace/')) {
-      return url.slice('/workspace/'.length)
-    }
-    if (url.startsWith('/optimize/serve-file?path=')) {
-      return decodeURIComponent(url.split('path=')[1] ?? '')
-    }
-    return url
   }
 
   async function handleImportMesh() {
@@ -765,7 +762,7 @@ export default function GeneratePage(): JSX.Element {
     if (!currentJob?.outputUrl) return
     setSmoothing(true)
     try {
-      const path = getOptimizePath(currentJob.outputUrl)
+      const path = toApiMeshPath(currentJob.outputUrl)
       const { url } = await smoothMesh(path, iterations)
       updateCurrentJob({ outputUrl: url })
       pushMeshUrl(url)
@@ -781,7 +778,7 @@ export default function GeneratePage(): JSX.Element {
     if (!currentJob?.outputUrl) return
     setDecimating(true)
     try {
-      const path = getOptimizePath(currentJob.outputUrl)
+      const path = toApiMeshPath(currentJob.outputUrl)
       const { url } = await optimizeMesh(path, targetFaces)
       updateCurrentJob({ outputUrl: url })
       pushMeshUrl(url)

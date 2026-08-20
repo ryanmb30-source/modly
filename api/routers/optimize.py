@@ -497,12 +497,34 @@ def ply_to_splat(path: str):
     return FileResponse(str(out), media_type="application/octet-stream")
 
 
+def _resolve_exportable_path(raw_path: str) -> Path:
+    """Resolve an export source for either route a mesh reaches the viewer by.
+
+    A generated mesh is workspace-relative and stays confined to the workspace.
+    An imported mesh lives wherever the user picked it, so it arrives as an
+    absolute path and is authorised by membership of _SERVABLE_PATHS -- the same
+    allowlist serve_file uses, populated only by files this process was asked to
+    open. "The user chose this file" stays the authorisation check; an arbitrary
+    absolute path that merely exists is still refused.
+
+    Without the absolute branch, exporting an imported mesh to obj/stl/ply
+    failed with 400 Invalid path (issue #10).
+    """
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        if str(resolved) not in _SERVABLE_PATHS:
+            raise HTTPException(403, "Path not exportable")
+        return resolved
+    return resolve_within(reg_module.WORKSPACE_DIR, raw_path)
+
+
 @router.get("/export")
 def export_mesh(path: str, format: str):
     if format not in ("obj", "stl", "ply"):
         raise HTTPException(400, "Supported formats: obj, stl, ply")
 
-    input_path = resolve_within(reg_module.WORKSPACE_DIR, path)
+    input_path = _resolve_exportable_path(path)
     if not input_path.exists():
         raise HTTPException(404, f"File not found: {path}")
 
