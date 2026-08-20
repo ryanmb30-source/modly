@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import axios, { AxiosInstance } from 'axios'
+import { apiAuthHeaders } from '@shared/api/authenticatedRequest'
 import { useAppStore } from '@shared/stores/appStore'
 import { getWorkflowExtension } from './mockExtensions'
 import type { WorkflowExtension } from './mockExtensions'
@@ -728,7 +729,7 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
       })
 
       try {
-        const client       = axios.create({ baseURL: apiUrl })
+        const client       = axios.create({ baseURL: apiUrl, headers: apiAuthHeaders(appState.apiToken) })
         const settings     = await window.electron.settings.get()
         const workspaceDir = settings.workspaceDir.replace(/\\/g, '/')
 
@@ -1007,8 +1008,11 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
       _pauseRequested.current = false
       flushResume()   // unblock a manual While pause so the run can tear down
       if (_activeJobId.current) {
-        const apiUrl = useAppStore.getState().apiUrl
-        axios.create({ baseURL: apiUrl }).post(`/generate/cancel/${_activeJobId.current}`).catch(() => {})
+        const { apiUrl, apiToken } = useAppStore.getState()
+        axios
+          .create({ baseURL: apiUrl, headers: apiAuthHeaders(apiToken) })
+          .post(`/generate/cancel/${_activeJobId.current}`)
+          .catch(() => {})
         _activeJobId.current = null
       }
       _ctx.current = null

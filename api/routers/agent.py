@@ -7,9 +7,22 @@ import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from services.api_auth import TOKEN_HEADER, configured_token
+
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 MODLY_API = "http://localhost:8765"
+
+
+def _self_call_headers() -> dict:
+    """Auth for the agent's own calls back into this API.
+
+    Its tools reach Modly over HTTP rather than in-process, so they pass through
+    the same token check as any other caller (issue #9). The token is read from
+    this process's environment, where Electron put it.
+    """
+    token = configured_token()
+    return {TOKEN_HEADER: token} if token else {}
 
 SYSTEM_PROMPT = """\
 You are Modly's built-in AI assistant, specialized in 3D modeling and workflow automation.
@@ -255,7 +268,9 @@ async def execute_tool(name: str, arguments: dict, context: dict) -> tuple[str, 
     """Execute a tool and return (result_text, action_payload).
     action_payload carries data the frontend needs to react (e.g. new mesh URL).
     """
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    # Scoped to this client only: the Ollama clients below must never carry
+    # Modly's token, since Ollama is a different trust domain (and may be remote).
+    async with httpx.AsyncClient(timeout=60.0, headers=_self_call_headers()) as client:
         try:
             if name == "list_models":
                 r = await client.get(f"{MODLY_API}/model/all")

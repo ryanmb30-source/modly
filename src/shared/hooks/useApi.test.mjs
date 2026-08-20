@@ -8,7 +8,9 @@ import { join, resolve } from 'node:path'
 
 // Bundle useApi.ts with stubbed dependencies:
 //   - axios            → records requests and returns canned responses
-//   - appStore         → useAppStore returns a fixed apiUrl (no React runtime)
+//   - appStore         → useAppStore returns a fixed apiUrl/apiToken (no React runtime)
+// authenticatedRequest is NOT stubbed: it is pure, and the point of
+// __clientConfig below is to prove the real header actually gets attached.
 // The stub modules communicate with the test through globalThis.
 function loadUseApi() {
   const dir = mkdtempSync(join(tmpdir(), 'modly-useapi-test-'))
@@ -22,16 +24,19 @@ function loadUseApi() {
       return Promise.resolve({ data: r ?? {} })
     }
     export default {
-      create: (cfg) => ({
-        get:  (url) => record(cfg?.baseURL, 'get', url),
-        post: (url, body) => record(cfg?.baseURL, 'post', url, body),
-      }),
+      create: (cfg) => {
+        globalThis.__clientConfig = cfg
+        return {
+          get:  (url) => record(cfg?.baseURL, 'get', url),
+          post: (url, body) => record(cfg?.baseURL, 'post', url, body),
+        }
+      },
     }
   `, 'utf8')
 
   const storeStub = join(dir, 'store-stub.mjs')
   writeFileSync(storeStub, `
-    export const useAppStore = (sel) => sel({ apiUrl: 'http://test.local' })
+    export const useAppStore = (sel) => sel({ apiUrl: 'http://test.local', apiToken: 'test-token' })
     export const GenerationOptions = {}
   `, 'utf8')
 
@@ -46,6 +51,7 @@ function loadUseApi() {
     alias: {
       axios: axiosStub,
       '@shared/stores/appStore': storeStub,
+      '@shared/api/authenticatedRequest': resolve('src/shared/api/authenticatedRequest.ts'),
     },
   })
   writeFileSync(outfile, result.outputFiles[0].text, 'utf8')
@@ -55,6 +61,7 @@ function loadUseApi() {
 function reset() {
   globalThis.__calls = []
   globalThis.__responses = {}
+  globalThis.__clientConfig = undefined
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -131,4 +138,14 @@ test('generateFromImage posts multipart and maps job_id → jobId', async () => 
   assert.ok(call.body instanceof FormData)
   assert.equal(call.body.get('model_id'), 'model-x')
   assert.equal(result.jobId, 'job42')
+})
+
+test('every request carries the API token, so the backend does not 401 (issue #9)', () => {
+  reset()
+  loadUseApi()()
+  assert.equal(
+    globalThis.__clientConfig?.headers?.['X-Modly-Token'],
+    'test-token',
+    'useApi built its axios client without the auth header',
+  )
 })

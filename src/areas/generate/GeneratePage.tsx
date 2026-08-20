@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useAppStore, DEFAULT_LIGHT_SETTINGS } from '@shared/stores/appStore'
 import type { GenerationJob, LightSettings } from '@shared/stores/appStore'
 import { useApi } from '@shared/hooks/useApi'
+import { withApiToken } from '@shared/api/authenticatedRequest'
 import { ColorPicker } from '@shared/components/ui'
 import GenerationHUD from './components/GenerationHUD'
 import Viewer3D from './components/Viewer3D'
@@ -587,6 +588,7 @@ export default function GeneratePage(): JSX.Element {
   )
   const currentJob = useAppStore((s) => s.currentJob)
   const apiUrl = useAppStore((s) => s.apiUrl)
+  const apiToken = useAppStore((s) => s.apiToken)
   const showError = useAppStore((s) => s.showError)
   const updateCurrentJob = useAppStore((s) => s.updateCurrentJob)
   const setCurrentJob = useAppStore((s) => s.setCurrentJob)
@@ -650,11 +652,13 @@ export default function GeneratePage(): JSX.Element {
     if (!currentJob?.outputUrl) return
     const stem = `modly-${Date.now()}`
     const link = document.createElement('a')
+    // A download driven by an anchor href: the browser makes the request, so
+    // the token cannot be a header here (issue #9).
     if (format === 'glb') {
-      link.href = `${apiUrl}${currentJob.outputUrl}`
+      link.href = withApiToken(`${apiUrl}${currentJob.outputUrl}`, apiToken)
     } else {
       const path = encodeURIComponent(currentJob.outputUrl.replace('/workspace/', ''))
-      link.href = `${apiUrl}/optimize/export?path=${path}&format=${format}`
+      link.href = withApiToken(`${apiUrl}/optimize/export?path=${path}&format=${format}`, apiToken)
     }
     link.download = `${stem}.${format}`
     link.click()

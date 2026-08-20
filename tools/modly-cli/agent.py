@@ -11,6 +11,7 @@ import argparse
 import json
 import mimetypes
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,33 @@ def _float_env(primary: str, fallback: str, default: float) -> float:
 
 
 DEFAULT_BASE_URL = os.environ.get("MODLY_API_URL", "http://127.0.0.1:8765")
+
+# The backend authenticates every caller (issue #9). Reuse an inherited token
+# when there is one -- that is how you attach to a backend someone else started
+# -- otherwise mint one for the backend this CLI spawns itself.
+MODLY_API_TOKEN = os.environ.get("MODLY_API_TOKEN", "").strip() or secrets.token_hex(32)
+TOKEN_HEADER = "X-Modly-Token"
+
+# Origins the token may be sent to. The CLI also talks to ComfyUI, which is a
+# different service in a different trust domain, so the header is attached by
+# origin rather than to every request. A missed registration costs a visible
+# 401; sending the token to the wrong host would be silent.
+_MODLY_ORIGINS: set[str] = set()
+
+
+def _register_modly_origin(base_url: str) -> None:
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme and parsed.netloc:
+        _MODLY_ORIGINS.add(f"{parsed.scheme}://{parsed.netloc}")
+
+
+def _auth_headers_for(url: str) -> dict[str, str]:
+    parsed = urllib.parse.urlsplit(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return {TOKEN_HEADER: MODLY_API_TOKEN} if origin in _MODLY_ORIGINS else {}
+
+
+_register_modly_origin(DEFAULT_BASE_URL)
 DEFAULT_TIMEOUT_SECONDS = _int_env("MODLY_CLI_TIMEOUT", "MODLY_AGENT_TIMEOUT", 1800)
 DEFAULT_POLL_SECONDS = _float_env("MODLY_CLI_POLL_SECONDS", "MODLY_AGENT_POLL_SECONDS", 2.0)
 EXPORT_FORMATS = ("glb", "stl", "obj", "ply")
@@ -70,12 +98,18 @@ def _request_json(
     data: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> Any:
-    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    merged = {**(headers or {}), **_auth_headers_for(url)}
+    req = urllib.request.Request(url, data=data, method=method, headers=merged)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            detail += (
+                " -- this backend was started with a different MODLY_API_TOKEN."
+                " Export the same token this CLI uses, or let it start its own backend."
+            )
         raise ModlyCliError(f"HTTP {exc.code} from {url}: {detail}", code=f"HTTP_{exc.code}", http_status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise ModlyCliError(f"Cannot reach Modly API at {url}: {exc.reason}", code="API_UNAVAILABLE") from exc
@@ -88,7 +122,8 @@ def _request_json(
 def _download(url: str, dest: Path, *, timeout: float) -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp, dest.open("wb") as fh:
+        download_req = urllib.request.Request(url, headers=_auth_headers_for(url))
+        with urllib.request.urlopen(download_req, timeout=timeout) as resp, dest.open("wb") as fh:
             total = 0
             while True:
                 chunk = resp.read(1024 * 1024)
@@ -332,9 +367,13 @@ def _resolve_serve_config(args: argparse.Namespace) -> tuple[Path, Path, dict[st
         "SELECTED_MODEL_ID": getattr(args, "model", None) or os.environ.get("SELECTED_MODEL_ID", ""),
         "HUGGING_FACE_HUB_TOKEN": hf_token,
         "HF_TOKEN": hf_token,
+        # Without this the backend refuses every request rather than serving
+        # them unauthenticated.
+        "MODLY_API_TOKEN": MODLY_API_TOKEN,
     })
     cmd = [str(python), "-m", "uvicorn", "main:app", "--host", args.host, "--port", str(args.port)]
     base_url = f"http://{args.host}:{args.port}"
+    _register_modly_origin(base_url)
     return api_dir, python, env, cmd, base_url
 
 

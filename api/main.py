@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi import HTTPException
 
 from routers import generation, model, optimize, status, settings, extensions, export, workflow_runs, agent
+from services.api_auth import api_token_middleware, redact_token
 from services.safe_paths import resolve_within
 
 
@@ -27,7 +28,27 @@ class _StatusFilter(logging.Filter):
     def filter(self, record):
         return "/generate/status/" not in record.getMessage()
 
+
+class _TokenRedactingFilter(logging.Filter):
+    """Keeps the API token out of the access log.
+
+    Asset URLs carry the token as a query parameter because three.js loaders
+    build their own requests and cannot set headers, so every mesh load would
+    otherwise write the secret to disk.
+    """
+
+    def filter(self, record):
+        if record.args:
+            record.args = tuple(
+                redact_token(arg) if isinstance(arg, str) else arg for arg in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = redact_token(record.msg)
+        return True
+
+
 logging.getLogger("uvicorn.access").addFilter(_StatusFilter())
+logging.getLogger("uvicorn.access").addFilter(_TokenRedactingFilter())
 
 
 app = FastAPI(
@@ -36,6 +57,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Registered before the CORS middleware below so that CORS ends up OUTERMOST:
+# Starlette wraps in reverse order of registration. That ordering matters twice
+# -- preflights are answered without reaching the token check, and the 401 this
+# emits still carries CORS headers, so the renderer can read the reason instead
+# of seeing an opaque network failure.
+app.middleware("http")(api_token_middleware)
+
 # The only legitimate caller is the Electron renderer. In production it is loaded
 # with loadFile(), so its origin is file:// and the browser sends "null"; in dev it
 # is ELECTRON_RENDERER_URL on a localhost port.
@@ -43,10 +71,10 @@ app = FastAPI(
 # This replaces allow_origins=["*"], which let any web page the user happened to
 # visit call every unauthenticated endpoint on this API and read the responses.
 #
-# CAVEAT: "null" is not a strong identity -- a sandboxed iframe on a hostile page
-# also sends Origin: null. Origin checks alone cannot fully authenticate the
-# renderer; a shared token minted by Electron at spawn time is the real fix.
-# Tracked separately.
+# CORS is no longer the security boundary: "null" is not a strong identity, since
+# a sandboxed iframe on a hostile page sends it too. Authentication is the token
+# check registered above. This stays as defence in depth and to keep the
+# renderer's own requests working.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["null"],

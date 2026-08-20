@@ -15,6 +15,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast
 import SplatViewer, { type SplatViewerHandle } from './SplatViewer'
 import { useGeneration } from '@shared/hooks/useGeneration'
 import { useAppStore } from '@shared/stores/appStore'
+import { withApiToken } from '@shared/api/authenticatedRequest'
 import { ViewerToolbar, type ViewMode } from './ViewerToolbar'
 import type { LightSettings } from '@shared/stores/appStore'
 import { DEFAULT_LIGHT_SETTINGS } from '@shared/stores/appStore'
@@ -808,6 +809,7 @@ type TransformSnapshot = { p: THREE.Vector3; q: THREE.Quaternion; s: THREE.Vecto
 export default function Viewer3D({ lightSettings = DEFAULT_LIGHT_SETTINGS, gizmoMode = null, gizmoUndoRef }: { lightSettings?: LightSettings; gizmoMode?: GizmoMode | null; gizmoUndoRef?: MutableRefObject<(() => boolean) | null> }): JSX.Element {
   const { currentJob } = useGeneration()
   const apiUrl = useAppStore((s) => s.apiUrl)
+  const apiToken = useAppStore((s) => s.apiToken)
 
   const setStoreMeshStats = useAppStore((s) => s.setMeshStats)
   const meshStats = useAppStore((s) => s.meshStats)
@@ -828,9 +830,12 @@ export default function Viewer3D({ lightSettings = DEFAULT_LIGHT_SETTINGS, gizmo
   const pendingTransform = useRef<TransformSnapshot | null>(null)
 
   const outputUrl = currentJob?.outputUrl ?? ''
+  // three.js and drei build these requests themselves and expose no way to set
+  // a header, so the token rides as a query parameter here (issue #9). The
+  // backend redacts it from the access log.
   const modelUrl =
     currentJob?.status === 'done' && currentJob.outputUrl
-      ? `${apiUrl}${currentJob.outputUrl}`
+      ? withApiToken(`${apiUrl}${currentJob.outputUrl}`, apiToken)
       : null
 
   // A .ply/.splat reaching the viewer is always a Gaussian splat here: mesh
@@ -840,7 +845,10 @@ export default function Viewer3D({ lightSettings = DEFAULT_LIGHT_SETTINGS, gizmo
   // The splat viewer needs binary .splat — route raw workspace .ply through the
   // conversion endpoint; import URLs already point at a .splat via serve-file.
   const splatUrl = outputUrl.startsWith('/workspace/')
-    ? `${apiUrl}/optimize/ply-to-splat?path=${encodeURIComponent(outputUrl.slice('/workspace/'.length))}`
+    ? withApiToken(
+        `${apiUrl}/optimize/ply-to-splat?path=${encodeURIComponent(outputUrl.slice('/workspace/'.length))}`,
+        apiToken,
+      )
     : modelUrl
 
   // Reset view state when model changes

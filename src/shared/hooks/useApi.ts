@@ -1,10 +1,14 @@
 import axios from 'axios'
 import { useAppStore, GenerationOptions } from '@shared/stores/appStore'
+import { apiAuthHeaders } from '@shared/api/authenticatedRequest'
 
 export function useApi() {
   const apiUrl = useAppStore((s) => s.apiUrl)
+  const apiToken = useAppStore((s) => s.apiToken)
 
-  const client = axios.create({ baseURL: apiUrl })
+  // Every method below goes through this client, so the token is attached once
+  // here rather than at each call site (issue #9).
+  const client = axios.create({ baseURL: apiUrl, headers: apiAuthHeaders(apiToken) })
 
   async function generateFromImage(
     imagePath: string,

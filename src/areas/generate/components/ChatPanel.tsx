@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@shared/stores/appStore'
+import { apiAuthHeaders } from '@shared/api/authenticatedRequest'
 import { useAgentStore } from '@shared/stores/agentStore'
 import { useWorkflowsStore } from '@shared/stores/workflowsStore'
 import { useExtensionsStore } from '@shared/stores/extensionsStore'
@@ -264,6 +265,7 @@ export default function ChatPanel(): JSX.Element {
   messagesRef.current = messages
 
   const apiUrl           = useAppStore((s) => s.apiUrl)
+  const apiToken         = useAppStore((s) => s.apiToken)
   const currentJob       = useAppStore((s) => s.currentJob)
   const meshStats        = useAppStore((s) => s.meshStats)
   const updateCurrentJob = useAppStore((s) => s.updateCurrentJob)
@@ -360,7 +362,7 @@ export default function ChatPanel(): JSX.Element {
 
       const res = await fetch(`${apiUrl}/agent/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiAuthHeaders(apiToken) },
         body: JSON.stringify({ messages: apiMessages, ollama_url: ollamaUrl, model, context, thinking: thinkingMode }),
       })
       if (!res.ok) throw new Error(`API error ${res.status}`)
@@ -408,7 +410,10 @@ export default function ChatPanel(): JSX.Element {
 
   async function fetchOllamaModels() {
     try {
-      const res = await fetch(`${apiUrl}/agent/models?ollama_url=${encodeURIComponent(ollamaUrl)}`)
+      const res = await fetch(
+        `${apiUrl}/agent/models?ollama_url=${encodeURIComponent(ollamaUrl)}`,
+        { headers: apiAuthHeaders(apiToken) },
+      )
       const data = await res.json()
       setOllamaModels(data.models ?? [])
     } catch {

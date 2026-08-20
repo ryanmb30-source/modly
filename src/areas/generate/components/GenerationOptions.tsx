@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '@shared/stores/appStore'
+import { apiAuthHeaders } from '@shared/api/authenticatedRequest'
 import { useApi } from '@shared/hooks/useApi'
 import { FieldLabel, Tooltip, ConfirmModal } from '@shared/components/ui'
 
@@ -280,7 +281,7 @@ function ModelSelect({ models, value, onChange }: ModelSelectProps): JSX.Element
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function GenerationOptions(): JSX.Element {
-  const { generationOptions, setGenerationOptions, currentJob, apiUrl } = useAppStore()
+  const { generationOptions, setGenerationOptions, currentJob, apiUrl, apiToken } = useAppStore()
   const [models, setModels] = useState<CatalogModel[]>([])
   const [textureResolutionRaw, setTextureResolutionRaw] = useState(
     String(generationOptions.textureResolution ?? 512)
@@ -308,7 +309,10 @@ export default function GenerationOptions(): JSX.Element {
       return
     }
 
-    fetch(`${apiUrl}/model/params?model_id=${encodeURIComponent(modelId)}`)
+    fetch(
+      `${apiUrl}/model/params?model_id=${encodeURIComponent(modelId)}`,
+      { headers: apiAuthHeaders(apiToken) },
+    )
       .then((res) => res.json())
       .then((params: ParamSchema[]) => {
         schemaCache.current[modelId] = params

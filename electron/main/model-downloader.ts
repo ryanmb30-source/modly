@@ -6,6 +6,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getSettings } from './settings-store'
 import { app } from 'electron'
+import { apiAuthHeaders } from './python-bridge'
 
 export interface DownloadProgress {
   percent: number
@@ -134,7 +135,9 @@ export async function downloadModelFromHF(
     url += `&token=${encodeURIComponent(hfToken)}`
   }
 
-  const res = await net.fetch(url)
+  // Header rather than a query parameter: this URL already carries the
+  // HuggingFace token, and net.fetch can set headers.
+  const res = await net.fetch(url, { headers: apiAuthHeaders() })
   if (!res.ok) throw new Error(`HuggingFace download failed: HTTP ${res.status}`)
   if (!res.body) throw new Error('No response body from HF download stream')
 

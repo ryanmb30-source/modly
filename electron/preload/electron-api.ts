@@ -47,8 +47,8 @@ export function createElectronApi(ipcRenderer: IpcRendererLike, webFrame: WebFra
     python: {
       start:     (): Promise<{ success: boolean; port?: number; error?: string }> =>
         ipcRenderer.invoke('python:start') as Promise<{ success: boolean; port?: number; error?: string }>,
-      status:    (): Promise<{ ready: boolean; apiUrl: string }> =>
-        ipcRenderer.invoke('python:status') as Promise<{ ready: boolean; apiUrl: string }>,
+      status:    (): Promise<{ ready: boolean; apiUrl: string; apiToken: string }> =>
+        ipcRenderer.invoke('python:status') as Promise<{ ready: boolean; apiUrl: string; apiToken: string }>,
       onCrashed: (cb: (data: { code: number | null }) => void) => {
         ipcRenderer.on('python:crashed', (_event, data) => cb(data as { code: number | null }))
       },
@@ -153,8 +153,8 @@ export function createElectronApi(ipcRenderer: IpcRendererLike, webFrame: WebFra
 
     // App metadata
     app: {
-      info: (): Promise<{ version: string; userData: string; modelsDir: string; apiUrl: string; platform: string; arch: string }> =>
-        ipcRenderer.invoke('app:info') as Promise<{ version: string; userData: string; modelsDir: string; apiUrl: string; platform: string; arch: string }>,
+      info: (): Promise<{ version: string; userData: string; modelsDir: string; apiUrl: string; apiToken: string; platform: string; arch: string }> =>
+        ipcRenderer.invoke('app:info') as Promise<{ version: string; userData: string; modelsDir: string; apiUrl: string; apiToken: string; platform: string; arch: string }>,
       onError:  (cb: (message: string) => void) => {
         ipcRenderer.on('app:error', (_event, message) => cb(message as string))
       },

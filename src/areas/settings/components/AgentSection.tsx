@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAgentStore, type ThinkingMode } from '@shared/stores/agentStore'
 import { useAppStore } from '@shared/stores/appStore'
+import { apiAuthHeaders } from '@shared/api/authenticatedRequest'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 export function AgentSection(): JSX.Element {
   const { ollamaUrl, defaultModel, defaultThinking, setOllamaUrl, setDefaultModel, setDefaultThinking } = useAgentStore()
   const apiUrl = useAppStore((s) => s.apiUrl)
+  const apiToken = useAppStore((s) => s.apiToken)
 
   const [urlDraft, setUrlDraft]     = useState(ollamaUrl)
   const [modelDraft, setModelDraft] = useState(defaultModel)
@@ -45,7 +47,10 @@ export function AgentSection(): JSX.Element {
 
   async function fetchModels(url: string) {
     try {
-      const res = await fetch(`${apiUrl}/agent/models?ollama_url=${encodeURIComponent(url)}`)
+      const res = await fetch(
+        `${apiUrl}/agent/models?ollama_url=${encodeURIComponent(url)}`,
+        { headers: apiAuthHeaders(apiToken) },
+      )
       const data = await res.json()
       setModels(data.models ?? [])
     } catch {
@@ -57,7 +62,10 @@ export function AgentSection(): JSX.Element {
     setTesting(true)
     setTestResult(null)
     try {
-      const res = await fetch(`${apiUrl}/agent/models?ollama_url=${encodeURIComponent(urlDraft)}`)
+      const res = await fetch(
+        `${apiUrl}/agent/models?ollama_url=${encodeURIComponent(urlDraft)}`,
+        { headers: apiAuthHeaders(apiToken) },
+      )
       const data = await res.json()
       const found = (data.models ?? []).length > 0
       setTestResult(found ? 'ok' : 'error')

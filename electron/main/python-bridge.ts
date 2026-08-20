@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'child_process'
+import { randomBytes } from 'crypto'
 import { join } from 'path'
 import { app, BrowserWindow } from 'electron'
 import { existsSync, mkdirSync } from 'fs'
@@ -10,6 +11,29 @@ import { cleanPythonEnv, getVenvPythonExe } from './python-setup'
 const API_PORT = 8765
 const API_HOST = '127.0.0.1'
 export const API_BASE_URL = `http://${API_HOST}:${API_PORT}`
+
+/**
+ * Shared secret authenticating callers of the local API (issue #9).
+ *
+ * Minted once per app run and handed to the backend in its environment, so it
+ * never touches disk and does not outlive the process. Binding to loopback
+ * keeps the API off the network but not away from the browser: any page the
+ * user has open can post to 127.0.0.1. CORS cannot tell the renderer apart from
+ * a sandboxed iframe -- both send `Origin: null` -- so possession of this token
+ * is what actually distinguishes a legitimate caller.
+ */
+const API_TOKEN = randomBytes(32).toString('hex')
+
+/** Header carrying the token. Mirrored in api/services/api_auth.py. */
+export const API_TOKEN_HEADER = 'X-Modly-Token'
+
+export function getApiToken(): string {
+  return API_TOKEN
+}
+
+export function apiAuthHeaders(): Record<string, string> {
+  return { [API_TOKEN_HEADER]: API_TOKEN }
+}
 
 export class PythonBridge {
   private process: ChildProcess | null = null
@@ -59,6 +83,9 @@ export class PythonBridge {
         SELECTED_MODEL_ID:      process.env['SELECTED_MODEL_ID'] ?? '',
         HUGGING_FACE_HUB_TOKEN: this.resolveHfToken(),
         HF_TOKEN:               this.resolveHfToken(),
+        // Without this the backend refuses every request rather than serving
+        // them unauthenticated, so a packaging bug that drops it fails loudly.
+        MODLY_API_TOKEN:        API_TOKEN,
       },
       // On Unix, put the bridge in its own process group so every subprocess
       // it spawns (extension runners, etc.) inherits that group. On shutdown
