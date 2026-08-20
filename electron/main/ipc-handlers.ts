@@ -36,7 +36,10 @@ import {
   EXT_REGISTRATION_PENDING_MARKER,
   EXT_VALIDATED_MARKER,
   assertSafeExtensionId,
+  isAllowedExternalUrl,
   isAtOrWithinRoot,
+  resolveChildWithinRoot,
+  resolvePathWithinRoot,
   buildExtensionBackupPath,
   buildExtensionStagingPath,
   isInternalExtensionDirName,
@@ -475,9 +478,12 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
   })
 
   ipcMain.handle('fs:readScreenshotDataUrl', async (_, filename: string) => {
-    const filePath = app.isPackaged
-      ? join(process.resourcesPath, 'screenshots', filename)
-      : join(app.getAppPath(), 'src/assets', filename)
+    // Confined: filename is caller-supplied, so a bare join let "../../" walk out
+    // of the bundled assets and read any file back as a data URL.
+    const root = app.isPackaged
+      ? join(process.resourcesPath, 'screenshots')
+      : join(app.getAppPath(), 'src/assets')
+    const filePath = resolvePathWithinRoot(root, filename)
     const buffer = await readFile(filePath)
     return `data:image/png;base64,${buffer.toString('base64')}`
   })
@@ -583,7 +589,15 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
   })
 
   // Shell
-  ipcMain.handle('shell:openExternal', (_, url: string) => shell.openExternal(url))
+  // Scheme-checked: shell.openExternal hands the string to the OS, so on Windows
+  // a file:// or custom-protocol URL launches a local handler rather than opening
+  // a web page.
+  ipcMain.handle('shell:openExternal', (_, url: string) => {
+    if (!isAllowedExternalUrl(url)) {
+      return Promise.reject(new Error('Refusing to open a non-web URL'))
+    }
+    return shell.openExternal(url)
+  })
 
   // App info
   // System memory (used/available/total bytes).
@@ -690,8 +704,21 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
   })
 
   // Workspace filesystem-based persistence
-  const workspacePath = (...parts: string[]) =>
-    join(getSettings(app.getPath('userData')).workspaceDir, ...parts)
+  /**
+   * A path inside the workspace, confined to it.
+   *
+   * Collection and job names arrive from the renderer and used to be joined
+   * straight onto the workspace root, so a name of "../../.." turned
+   * workspace:deleteCollection into `rm -rf` on AppData -- one level further up
+   * and it is the whole user profile -- with force: true.
+   *
+   * resolvePathWithinRoot resolves first, then rejects anything escaping the
+   * root or landing on the root itself. It is the helper that already existed
+   * for this, and whose own comment calls out deletion call sites. Callers pass
+   * names, never paths.
+   */
+  const workspacePath = (...parts: string[]): string =>
+    resolveChildWithinRoot(getSettings(app.getPath('userData')).workspaceDir, parts)
 
   registerWorkspaceAssetLibraryIpcHandlers({
     ipcMain,
@@ -781,6 +808,20 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
   })
 
   ipcMain.handle('fs:moveDirectory', async (_, { src, dest }: { src: string; dest: string }) => {
+    // src is recursively DELETED after the copy, so it may only be one of the
+    // directories the app actually manages. dest is wherever the user chose to
+    // move their data to, and is only written.
+    const settings = getSettings(app.getPath('userData'))
+    const movableRoots = [
+      settings.modelsDir,
+      settings.workspaceDir,
+      settings.workflowsDir,
+      settings.extensionsDir,
+      settings.dependenciesDir,
+    ]
+    if (!movableRoots.some((root) => isAtOrWithinRoot(root, src))) {
+      return { success: false, error: 'Source is not a managed directory' }
+    }
     try {
       await mkdir(dest, { recursive: true })
       await cp(src, dest, { recursive: true })
@@ -1844,9 +1885,16 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
     const userData        = app.getPath('userData')
     const { extensionsDir, workspaceDir } = getSettings(userData)
 
-    // Resolve extension directory: check built-ins first, then user extensions
-    const builtinExtDir = join(getBuiltinExtensionsDir(), extensionId)
-    const userExtDir    = join(extensionsDir, extensionId)
+    // Validated: extensionId becomes a directory whose entry file is EXECUTED,
+    // so a traversal here runs code from an attacker-chosen directory.
+    // assertSafeExtensionId already existed and this call site never used it.
+    try {
+      extensionId = assertSafeExtensionId(extensionId)
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+    const builtinExtDir = resolveExtensionPathWithinRoot(getBuiltinExtensionsDir(), extensionId)
+    const userExtDir    = resolveExtensionPathWithinRoot(extensionsDir, extensionId)
     const extDir        = existsSync(builtinExtDir) ? builtinExtDir : userExtDir
 
     if (!existsSync(extDir)) return { success: false, error: `Extension "${extensionId}" not found` }
@@ -1946,7 +1994,8 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
 
   ipcMain.handle('workflows:delete', async (_, id: string) => {
     try {
-      await rmAsync(join(workflowsDir(), `${id}.json`), { force: true })
+      // Confined: an id of "../../x" deleted x.json anywhere on disk.
+      await rmAsync(resolvePathWithinRoot(workflowsDir(), `${id}.json`), { force: true })
       return { success: true }
     } catch (err) {
       return { success: false, error: String(err) }

@@ -44,6 +44,43 @@ test('empty inputs are not contained', async () => {
   assert.equal(isAtOrWithinRoot(ROOT, ''), false)
 })
 
+test('workspace name segments cannot escape the workspace root', async () => {
+  const { resolveChildWithinRoot } = await loadGuard()
+
+  // Names, the legitimate shape.
+  assert.equal(resolveChildWithinRoot(ROOT, ['Session']), join(ROOT, 'Session'))
+  assert.equal(resolveChildWithinRoot(ROOT, ['Session', 'cube.glb']), join(ROOT, 'Session', 'cube.glb'))
+  // No segments means the root, which listing uses.
+  assert.equal(resolveChildWithinRoot(ROOT, []), ROOT)
+
+  // The traversal that made workspace:deleteCollection an rm -rf on AppData.
+  for (const parts of [['..'], ['..', '..'], ['..', '..', '..'], ['Session', '..', '..']]) {
+    assert.throws(
+      () => resolveChildWithinRoot(ROOT, parts),
+      /escapes root/i,
+      `${JSON.stringify(parts)} should not resolve outside the root`,
+    )
+  }
+})
+
+test('only web URLs may be handed to the OS', async () => {
+  const { isAllowedExternalUrl } = await loadGuard()
+
+  assert.equal(isAllowedExternalUrl('https://github.com/lightningpixel/modly'), true)
+  assert.equal(isAllowedExternalUrl('http://localhost:8765/docs'), true)
+  assert.equal(isAllowedExternalUrl('mailto:someone@example.com'), true)
+
+  // shell.openExternal resolves these against OS protocol handlers.
+  assert.equal(isAllowedExternalUrl('file:///C:/Windows/System32/calc.exe'), false)
+  assert.equal(isAllowedExternalUrl('ms-msdt:/id PCWDiagnostic'), false)
+  assert.equal(isAllowedExternalUrl('search-ms:query=passwords'), false)
+  assert.equal(isAllowedExternalUrl('javascript:alert(1)'), false)
+  assert.equal(isAllowedExternalUrl('\\\\attacker\\share\\payload.exe'), false)
+  assert.equal(isAllowedExternalUrl(''), false)
+  assert.equal(isAllowedExternalUrl(null), false)
+  assert.equal(isAllowedExternalUrl(42), false)
+})
+
 // ─── The gate ────────────────────────────────────────────────────────────────
 //
 // Issue #4 named the string-prefix containment bypass and fixed two call sites.
@@ -66,6 +103,27 @@ function sourceFiles(dir, collected = []) {
   }
   return collected
 }
+
+// A wiring assertion, not a behavioural one: resolveChildWithinRoot is tested
+// above, but it is reached through a closure inside setupIpcHandlers, so nothing
+// else would notice workspacePath regressing to a bare join(). The handlers it
+// feeds include a recursive delete, which is why this is worth pinning at all.
+test('workspacePath routes through the containment helper', () => {
+  const source = readFileSync(join(MAIN_DIR, 'ipc-handlers.ts'), 'utf8')
+  const definition = source
+    .split('\n')
+    .findIndex((line) => /const workspacePath\s*=/.test(line))
+
+  assert.ok(definition !== -1, 'workspacePath definition not found — has it been renamed?')
+
+  const body = source.split('\n').slice(definition, definition + 4).join('\n')
+  assert.match(
+    body,
+    /resolveChildWithinRoot/,
+    'workspacePath must confine caller-supplied names to the workspace root; '
+    + 'a bare join() lets "../../.." reach a recursive delete outside it',
+  )
+})
 
 test('no main-process or renderer code decides path containment with a string prefix', () => {
   const offenders = []

@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve as resolvePath } from 'node:path'
+import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
 const EXTENSION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/
 
@@ -47,6 +47,29 @@ export function resolvePathWithinRoot(rootDir: string, unsafeLeaf: string): stri
 
 export function resolveExtensionPathWithinRoot(rootDir: string, extensionId: unknown): string {
   return resolvePathWithinRoot(rootDir, assertSafeExtensionId(extensionId))
+}
+
+/**
+ * May this URL be handed to shell.openExternal?
+ *
+ * openExternal passes the string to the OS, which resolves it against the
+ * registered protocol handlers. That is the intent for a documentation link and
+ * a problem for anything else: on Windows a `file:` URL opens a local file, and
+ * custom schemes launch whatever application claims them.
+ *
+ * Allowlisted rather than denylisted -- the set of schemes an OS will act on is
+ * open-ended and grows with installed software, so enumerating the bad ones is
+ * a losing game.
+ */
+const OPENABLE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
+
+export function isAllowedExternalUrl(url: unknown): boolean {
+  if (typeof url !== 'string' || url.trim() === '') return false
+  try {
+    return OPENABLE_PROTOCOLS.has(new URL(url).protocol)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -123,4 +146,19 @@ export function parseExtensionBackupName(name: string): { extensionId: string } 
 export function buildExtensionStagingPath(rootDir: string, extensionId: unknown, suffix: string): string {
   const safeId = assertSafeExtensionId(extensionId)
   return resolvePathWithinRoot(rootDir, `${EXT_STAGING_PREFIX}${safeId}-${suffix}`)
+}
+
+
+/**
+ * Resolve caller-supplied name segments to a path inside `rootDir`.
+ *
+ * Segments are names ("Session", "cube.glb"), never paths. Joining them onto a
+ * root without checking is how workspace:deleteCollection came to accept
+ * "../../.." and recursively delete AppData.
+ *
+ * No segments means the root itself, which callers use to list it.
+ */
+export function resolveChildWithinRoot(rootDir: string, parts: string[]): string {
+  if (parts.length === 0) return resolvePath(rootDir)
+  return resolvePathWithinRoot(rootDir, join(...parts))
 }
