@@ -1,0 +1,55 @@
+# Runs the one test that cannot execute on a stock Windows workstation.
+#
+# electron/main/extension-install-recovery.test.mjs asserts that extension
+# registration state is never written through, and backup cleanup never deletes
+# through, a symlinked backup directory. Setting that scenario up requires
+# creating a symlink, which Windows refuses without Developer Mode or elevation,
+# so the test self-skips locally via a capability probe.
+#
+# Linux has no such restriction. Running it here keeps the guard verified
+# without granting SeCreateSymbolicLink on a workstation.
+name: symlink guard
+
+on:
+  push:
+    branches:
+      - modly-fork
+  workflow_dispatch:
+
+jobs:
+  symlink-backup-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the symlinked-backup guard test
+        run: |
+          set -o pipefail
+          node --test \
+            --test-name-pattern="never writes through a symlinked backup" \
+            electron/main/extension-install-recovery.test.mjs 2>&1 | tee result.txt
+
+      # The test skips itself when symlinks are unavailable, and node exits 0 on
+      # a skip. Without this step a runner that could not create symlinks would
+      # report green while proving nothing.
+      - name: Assert the test actually ran
+        run: |
+          if ! grep -qE '(^|[^0-9])pass 1([^0-9]|$)' result.txt; then
+            echo "::error::Expected exactly 1 passing test; the guard did not run."
+            cat result.txt
+            exit 1
+          fi
+          if ! grep -qE '(^|[^0-9])skipped 0([^0-9]|$)' result.txt; then
+            echo "::error::The test was SKIPPED on the runner - the symlink probe found symlink creation unavailable, so this job proves nothing."
+            cat result.txt
+            exit 1
+          fi
+          echo "Symlinked-backup guard ran and passed."
