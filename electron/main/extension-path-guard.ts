@@ -49,6 +49,33 @@ export function resolveExtensionPathWithinRoot(rootDir: string, extensionId: unk
   return resolvePathWithinRoot(rootDir, assertSafeExtensionId(extensionId))
 }
 
+/**
+ * Is `candidatePath` the root itself, or somewhere inside it?
+ *
+ * For call sites handed an already-absolute path that must decide whether it
+ * falls under a permitted root -- as opposed to resolvePathWithinRoot, which
+ * builds a child path from an untrusted leaf.
+ *
+ * The root itself counts as allowed: Settings deletes a configured directory
+ * wholesale ("delete all my models"), so refusing the root would break it.
+ *
+ * Containment is computed with `relative`, never a string prefix compare.
+ * `startsWith` treats `<root>-evil` and `<root>XYZ` as inside `<root>`, which is
+ * how a recursive delete came to accept sibling directories. Issue #4 named that
+ * bypass; this is the predicate that ends it.
+ */
+export function isAtOrWithinRoot(rootDir: string, candidatePath: string): boolean {
+  if (!rootDir || !candidatePath) return false
+
+  const root = resolvePath(rootDir)
+  const candidate = resolvePath(candidatePath)
+  if (candidate === root) return true
+
+  // On Windows a different drive yields an absolute relative-path, caught below.
+  const rel = relative(root, candidate).replace(/\\/g, '/')
+  return rel !== '' && rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel)
+}
+
 // ─── Internal (non-extension) dir names inside extensionsDir ─────────────────
 // Extension ids can never start with a dot, so dot-prefixed names are reserved
 // for install machinery: staging copies, backups of the previous version.

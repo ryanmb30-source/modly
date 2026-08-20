@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, dialog, app, shell } from 'electron'
 import { buildSync } from 'esbuild'
 import { autoUpdater } from 'electron-updater'
-import { join } from 'path'
+import { join, resolve as resolvePath } from 'path'
 import { rm as rmAsync, readFile, writeFile, mkdir, readdir, rename, cp, symlink, lstat } from 'fs/promises'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import axios from 'axios'
@@ -36,6 +36,7 @@ import {
   EXT_REGISTRATION_PENDING_MARKER,
   EXT_VALIDATED_MARKER,
   assertSafeExtensionId,
+  isAtOrWithinRoot,
   buildExtensionBackupPath,
   buildExtensionStagingPath,
   isInternalExtensionDirName,
@@ -796,11 +797,18 @@ export function setupIpcHandlers(pythonBridge: PythonBridge, getWindow: WindowGe
     const allowedRoots = [
       settings.modelsDir,
       settings.workspaceDir,
+      // Was missing, so Settings' "delete workflows" always failed with "Path is
+      // outside allowed directories": the configured directories are siblings
+      // under userData, so workflowsDir matched none of the others.
+      settings.workflowsDir,
       settings.extensionsDir,
       join(userData, 'gen-cache'),
     ]
-    const resolved = join(dirPath)
-    const isAllowed = allowedRoots.some((root) => resolved.startsWith(root))
+    // isAtOrWithinRoot, not startsWith. This is a recursive delete, and a prefix
+    // compare accepts "<workspaceDir>-evil" and "<workspaceDir>XYZ" as being
+    // inside the workspace -- the bypass issue #4 named.
+    const resolved = resolvePath(dirPath)
+    const isAllowed = allowedRoots.some((root) => isAtOrWithinRoot(root, resolved))
     if (!isAllowed) {
       return { success: false, error: 'Path is outside allowed directories' }
     }

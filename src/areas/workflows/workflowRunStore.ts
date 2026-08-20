@@ -112,9 +112,23 @@ function reachableExecutable(startId: string, edges: WFEdge[], nodeMap: Map<stri
   return body
 }
 
+/**
+ * Is a forward-slash-normalised path the workspace root, or inside it?
+ *
+ * A bare `norm.startsWith(workspaceDir)` also matches `<workspaceDir>-evil`,
+ * which then gets sliced into a mangled "/workspace/-evil/..." URL the backend
+ * rejects. Requiring the separator is what makes it a path test rather than a
+ * string test -- the same bypass issue #4 named, in its renderer-side form.
+ */
+function isInWorkspace(normalisedPath: string, workspaceDir: string): boolean {
+  if (!workspaceDir) return false
+  const root = workspaceDir.replace(/\/+$/, '')
+  return normalisedPath === root || normalisedPath.startsWith(`${root}/`)
+}
+
 function toWorkspaceUrl(filePath: string, workspaceDir: string): string | undefined {
   const norm = filePath.replace(/\\/g, '/')
-  if (!norm.startsWith(workspaceDir)) return undefined
+  if (!isInWorkspace(norm, workspaceDir)) return undefined
   return `/workspace/${norm.slice(workspaceDir.length).replace(/^\//, '')}`
 }
 
@@ -363,7 +377,7 @@ async function executeExtensionNode(
     const extraParams: Record<string, unknown> = {}
     if (nodeInputMeshPath) {
       const norm = nodeInputMeshPath.replace(/\\/g, '/')
-      extraParams.mesh_path = norm.startsWith(workspaceDir)
+      extraParams.mesh_path = isInWorkspace(norm, workspaceDir)
         ? norm.slice(workspaceDir.length).replace(/^\//, '')
         : norm
     }
@@ -532,7 +546,7 @@ export const useWorkflowRunStore = create<WorkflowRunStore>((set, get) => {
     for (const [nodeId, o] of ctx.nodeOutputs) {
       if (o.outputType === 'image' && o.filePath) {
         const norm = o.filePath.replace(/\\/g, '/')
-        if (norm.startsWith(ctx.workspaceDir)) {
+        if (isInWorkspace(norm, ctx.workspaceDir)) {
           out[nodeId] = `/workspace/${norm.slice(ctx.workspaceDir.length).replace(/^\//, '')}`
         }
       }
