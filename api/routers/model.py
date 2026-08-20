@@ -10,7 +10,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from services.generator_registry import generator_registry, MODELS_DIR
+# MODELS_DIR is read through the module, not imported by name: update_paths()
+# rebinds it at runtime and a by-value import would keep the old root.
+import services.generator_registry as reg_module
+from services.generator_registry import generator_registry
 
 router = APIRouter(tags=["model"])
 
@@ -144,7 +147,7 @@ async def hf_download(
     """
     import json as _json
     import os
-    dest_dir  = str(MODELS_DIR / model_id)
+    dest_dir  = str(reg_module.MODELS_DIR / model_id)
     # Prefer skip_prefixes passed directly from the client (authoritative, no registry dep)
     if skip_prefixes:
         try:

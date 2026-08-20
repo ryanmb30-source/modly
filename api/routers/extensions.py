@@ -33,16 +33,17 @@ async def setup_extension(ext_id: str):
     Called automatically after installing an extension from GitHub.
     Runs setup.py with Modly's embedded Python and the detected GPU SM.
     """
-    from services.generator_registry import EXTENSIONS_DIR
+    import services.generator_registry as reg_module
 
-    if EXTENSIONS_DIR is None or not EXTENSIONS_DIR.exists():
+    extensions_dir = reg_module.EXTENSIONS_DIR
+    if extensions_dir is None or not extensions_dir.exists():
         raise HTTPException(400, "EXTENSIONS_DIR not configured")
 
-    ext_dir  = EXTENSIONS_DIR / ext_id
+    ext_dir  = extensions_dir / ext_id
     setup_py = ext_dir / "setup.py"
 
     if not ext_dir.exists():
-        raise HTTPException(404, f"Extension '{ext_id}' not found in {EXTENSIONS_DIR}")
+        raise HTTPException(404, f"Extension '{ext_id}' not found in {extensions_dir}")
     if not setup_py.exists():
         # No setup.py → legacy extension, nothing to do
         return {"status": "skipped", "reason": "no setup.py"}

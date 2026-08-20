@@ -67,11 +67,14 @@ class ExtensionProcess:
     # ------------------------------------------------------------------ #
 
     def _build_env(self) -> dict:
-        from services.generator_registry import MODELS_DIR, WORKSPACE_DIR
+        # Imported here rather than at module scope to avoid a circular import;
+        # read through the module so a runtime path change reaches the subprocess.
+        import services.generator_registry as reg_module
+
         env = os.environ.copy()
         env["EXTENSION_DIR"] = str(self.ext_dir)
-        env["MODELS_DIR"]    = str(MODELS_DIR)
-        env["WORKSPACE_DIR"] = str(WORKSPACE_DIR)
+        env["MODELS_DIR"]    = str(reg_module.MODELS_DIR)
+        env["WORKSPACE_DIR"] = str(reg_module.WORKSPACE_DIR)
         env["MODLY_API_DIR"] = str(Path(__file__).parent.parent)
         if sys.platform == "darwin":
             env.setdefault("NUMBA_DISABLE_JIT", "1")
